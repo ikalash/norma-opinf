@@ -43,11 +43,12 @@ jobs:
 
     - name: Setup Norma 
       env:
-        PYTHON: /Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/python 
+        PYTHON: python 
       run: |
         which python
         cd Norma.jl 
-        julia -e 'using Pkg; Pkg.activate("."); Pkg.update();'
+        julia -e 'import Pkg; ENV["PYTHON"] = "/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/python"; Pkg.build("PyCall")'
+        julia -e 'using pkg; pkg.activate("."); pkg.update();'
 
     - name: Install dependencies
       env:
