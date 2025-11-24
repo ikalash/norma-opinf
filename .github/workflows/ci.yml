@@ -47,7 +47,7 @@ jobs:
       run: |
         which python
         cd Norma.jl 
-        julia -e 'print(ENV["PYTHON"]); ENV["PYTHON"] = "/opt/hostedtoolcache/Python/3.1.2"; print(ENV["PYTHON"])'
+        julia -e 'print(ENV["PYTHON"]); ENV["PYTHON"] = "/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/python"; print(ENV["PYTHON"]); using Pkg; Pkg.activate("."); Pkg.update();'
 
     - name: Install dependencies
       env:
