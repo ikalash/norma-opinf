@@ -41,6 +41,10 @@ jobs:
     - name: Cache Julia artifacts
       uses: julia-actions/cache@v2
 
+    - name: Ensure Julia uses correct Python (optional)
+      run: |
+        julia -e 'ENV["PYTHON"] = ENV["pythonLocation"]; using Pkg; Pkg.build("PyCall")'
+
     - name: Setup Norma 
       env:
         PYTHON: python
