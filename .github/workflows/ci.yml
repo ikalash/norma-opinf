@@ -49,10 +49,14 @@ jobs:
         julia -e 'ENV["PYTHON"] = "python"; using Pkg; Pkg.activate("."); Pkg.update();'
 
     - name: Install dependencies
+      env:
+        PYTHON: ${{ github.python }} 
       run: |
         pip install --upgrade pip
         pip install . 
 
     - name: Run tests
+      env:
+        PYTHON: ${{ github.python }} 
       run: |
         pytest --norma="julia --project=$GITHUB_WORKSPACE/Norma.jl $GITHUB_WORKSPACE/Norma.jl/src/Norma.jl"
