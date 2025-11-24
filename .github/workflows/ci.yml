@@ -43,11 +43,11 @@ jobs:
 
     - name: Setup Norma 
       env:
-        PYTHON: ${{ github.python }} 
+        PYTHON: python 
       run: |
-        echo ${{ github.python }}
+        which python
         cd Norma.jl 
-        julia -e 'print(ENV["PYTHON"]); ENV["PYTHON"] = "PYTHON"; print(ENV["PYTHON"])'
+        julia -e 'print(ENV["PYTHON"]); ENV["PYTHON"] = "/opt/hostedtoolcache/Python/3.1.2"; print(ENV["PYTHON"])'
 
     - name: Install dependencies
       env:
@@ -58,6 +58,6 @@ jobs:
 
     - name: Run tests
       env:
-        PYTHON: ${{ github.python }} 
+        PYTHON: python 
       run: |
         pytest --norma="julia --project=$GITHUB_WORKSPACE/Norma.jl $GITHUB_WORKSPACE/Norma.jl/src/Norma.jl"
