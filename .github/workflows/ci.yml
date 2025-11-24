@@ -45,8 +45,9 @@ jobs:
       env:
         PYTHON: ${{ github.python }} 
       run: |
+        echo ${{ github.python }}
         cd Norma.jl 
-        julia -e 'print(ENV["PYTHON"]); ENV["PYTHON"] = "python"; print(ENV["PYTHON"])'
+        julia -e 'print(ENV["PYTHON"]); ENV["PYTHON"] = "PYTHON"; print(ENV["PYTHON"])'
 
     - name: Install dependencies
       env:
