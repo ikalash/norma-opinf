@@ -49,7 +49,6 @@ jobs:
         which python3
         cd Norma.jl 
         julia -e 'import Pkg; ENV["PYTHON"] = "/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/python"; Pkg.add("PyCall"); Pkg.build("PyCall")'
-        julia -e 'using pkg; pkg.activate("."); pkg.update();'
 
     - name: Install dependencies
       env:
