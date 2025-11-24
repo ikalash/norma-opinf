@@ -46,7 +46,7 @@ jobs:
         PYTHON: python
       run: |
         cd Norma.jl 
-        julia -e 'using Pkg; Pkg.build("PyCall"); Pkg.activate("."); Pkg.update();'
+        julia -e 'using Pkg; Pkg.activate("."); Pkg.update();'
 
     - name: Install dependencies
       run: |
