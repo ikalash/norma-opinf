@@ -65,6 +65,8 @@ jobs:
         julia --project=. -e '
           import Pkg
           ENV["PYTHON"] = ENV["PYTHON"]
+          ENV["PYCALL_USE_CONDA"] = "0"
+          ENV["PYTHON"] = ENV["PYTHON"]
           @info "Using PYTHON" ENV["PYTHON"]
 
           Pkg.instantiate()
