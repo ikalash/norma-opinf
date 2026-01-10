@@ -1,4 +1,4 @@
-name: Python CI
+name: Python CI (Conda)
 
 on:
   push:
@@ -20,21 +20,25 @@ jobs:
       uses: actions/checkout@v4
 
     # ------------------------------------------------------------
-    # Python
+    # Conda (Python stack)
     # ------------------------------------------------------------
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    - name: Set up Miniconda
+      uses: conda-incubator/setup-miniconda@v3
       with:
-        python-version: '3.12'
+        auto-update-conda: true
+        python-version: "3.12"
+        activate-environment: norma-ci
+        environment-name: norma-ci
 
-    - name: Capture Python path
+    - name: Verify Conda Python
+      shell: bash -l {0}
       run: |
-        echo "PYTHON_PATH=$(python -c 'import sys; print(sys.executable)')" >> $GITHUB_ENV
-        python -c "import sys; print(sys.version)"
         which python
+        python -c "import sys; print(sys.version)"
+        conda info
 
     # ------------------------------------------------------------
-    # Clone Norma.jl (sparse checkout)
+    # Clone Norma.jl
     # ------------------------------------------------------------
     - name: Clone Norma.jl
       run: |
@@ -55,36 +59,35 @@ jobs:
       uses: julia-actions/cache@v2
 
     # ------------------------------------------------------------
-    # Julia + PyCall (BOUND TO PYTHON)
+    # Julia + PyCall (Conda-managed)
     # ------------------------------------------------------------
-    - name: Setup Norma.jl and PyCall
-      env:
-        PYTHON: ${{ env.PYTHON_PATH }}
+    - name: Setup Norma.jl with PyCall (Conda)
+      shell: bash -l {0}
       run: |
         cd Norma.jl
         julia --project=. -e '
           import Pkg
-          ENV["PYTHON"] = ENV["PYTHON"]
-          ENV["PYCALL_USE_CONDA"] = "0"
-          ENV["PYTHON"] = ENV["PYTHON"]
-          @info "Using PYTHON" ENV["PYTHON"]
+
+          # Force PyCall to use Conda
+          ENV["PYCALL_USE_CONDA"] = "1"
 
           Pkg.instantiate()
           Pkg.add("PyCall")
           Pkg.build("PyCall")
 
           using PyCall
-          @info "PyCall bound python" PyCall.python
-          @info "PyCall libpython" PyCall.libpython
+          @info "PyCall.python" PyCall.python
+          @info "PyCall.libpython" PyCall.libpython
 
           pyimport("sys")
           pyimport("platform")
         '
 
     # ------------------------------------------------------------
-    # Python package install
+    # Python dependencies (inside Conda env)
     # ------------------------------------------------------------
     - name: Install Python dependencies
+      shell: bash -l {0}
       run: |
         pip install --upgrade pip
         pip install .
@@ -93,6 +96,7 @@ jobs:
     # Tests
     # ------------------------------------------------------------
     - name: Run tests
+      shell: bash -l {0}
       run: |
         pytest --norma="julia --project=$GITHUB_WORKSPACE/Norma.jl $GITHUB_WORKSPACE/Norma.jl/src/Norma.jl"
 
