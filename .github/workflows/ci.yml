@@ -1,62 +1,102 @@
-name: Python CI
+name: Python CI (Conda)
 
 on:
   push:
-    branches:
-      - main  # Change this to your default branch
+    branches: [ main ]
   pull_request:
-    branches:
-      - main  # Change this to your default branch
+    branches: [ main ]
   schedule:
-    - cron: '0 0 * * *'  # This will run the workflow every day at midnight UTC
+    - cron: '0 0 * * *'
 
 jobs:
   build:
-
-    #runs-on: ubuntu-latest  # Use the latest Ubuntu runner
     runs-on: macos-latest
 
     steps:
+    # ------------------------------------------------------------
+    # Checkout
+    # ------------------------------------------------------------
     - name: Checkout code
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v2
+    # ------------------------------------------------------------
+    # Conda (Python stack)
+    # ------------------------------------------------------------
+    - name: Set up Miniconda
+      uses: conda-incubator/setup-miniconda@v3
       with:
-        python-version: '3.12'  # Specify the Python version
+        auto-update-conda: true
+        python-version: "3.12"
+        activate-environment: norma-ci
+        environment-name: norma-ci
 
-    - name: Clone Norma.jl repository
+    - name: Verify Conda Python
+      shell: bash -l {0}
+      run: |
+        which python
+        python -c "import sys; print(sys.version)"
+        conda info
+
+    # ------------------------------------------------------------
+    # Clone Norma.jl
+    # ------------------------------------------------------------
+    - name: Clone Norma.jl
       run: |
         git clone -n --depth=1 --filter=tree:0 https://github.com/sandialabs/Norma.jl.git
         cd Norma.jl
         git sparse-checkout set --no-cone /src /Project.toml
         git checkout
 
-
+    # ------------------------------------------------------------
+    # Julia
+    # ------------------------------------------------------------
     - name: Set up Julia
-      uses: julia-actions/setup-julia@v2 
+      uses: julia-actions/setup-julia@v2
       with:
-        version: '1.11'  # Specify the Julia version
+        version: '1.11'
 
     - name: Cache Julia artifacts
       uses: julia-actions/cache@v2
 
-    - name: Ensure Julia uses correct Python (optional)
+    # ------------------------------------------------------------
+    # Julia + PyCall (Conda-managed)
+    # ------------------------------------------------------------
+    - name: Setup Norma.jl with PyCall (Conda)
+      shell: bash -l {0}
       run: |
-        julia -e 'ENV["PYTHON"] = ENV["pythonLocation"]; using Pkg; Pkg.build("PyCall")'
+        cd Norma.jl
+        julia --project=. -e '
+          import Pkg
 
-    - name: Setup Norma 
-      env:
-        PYTHON: python
-      run: |
-        cd Norma.jl 
-        julia -e 'using Pkg; Pkg.activate("."); Pkg.update();'
+          # Force PyCall to use Conda
+          ENV["PYCALL_USE_CONDA"] = "1"
 
-    - name: Install dependencies
+          Pkg.instantiate()
+          Pkg.add("PyCall")
+          Pkg.build("PyCall")
+
+          using PyCall
+          @info "PyCall.python" PyCall.python
+          @info "PyCall.libpython" PyCall.libpython
+
+          pyimport("sys")
+          pyimport("platform")
+        '
+
+    # ------------------------------------------------------------
+    # Python dependencies (inside Conda env)
+    # ------------------------------------------------------------
+    - name: Install Python dependencies
+      shell: bash -l {0}
       run: |
         pip install --upgrade pip
-        pip install . 
+        pip install .
 
+    # ------------------------------------------------------------
+    # Tests
+    # ------------------------------------------------------------
     - name: Run tests
+      shell: bash -l {0}
       run: |
         pytest --norma="julia --project=$GITHUB_WORKSPACE/Norma.jl $GITHUB_WORKSPACE/Norma.jl/src/Norma.jl"
+
