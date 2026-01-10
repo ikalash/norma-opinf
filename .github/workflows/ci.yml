@@ -2,63 +2,95 @@ name: Python CI
 
 on:
   push:
-    branches:
-      - main  # Change this to your default branch
+    branches: [ main ]
   pull_request:
-    branches:
-      - main  # Change this to your default branch
+    branches: [ main ]
   schedule:
-    - cron: '0 0 * * *'  # This will run the workflow every day at midnight UTC
+    - cron: '0 0 * * *'
 
 jobs:
   build:
-
-    #runs-on: ubuntu-latest  # Use the latest Ubuntu runner
     runs-on: macos-latest
 
     steps:
+    # ------------------------------------------------------------
+    # Checkout
+    # ------------------------------------------------------------
     - name: Checkout code
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
+    # ------------------------------------------------------------
+    # Python
+    # ------------------------------------------------------------
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.12'  # Specify the Python version
+        python-version: '3.12'
 
-    - name: Clone Norma.jl repository
+    - name: Capture Python path
       run: |
-        git clone -n --depth=1 --filter=tree:0 https://github.com/sandialabs/Norma.jl.git
+        echo "PYTHON_PATH=$(python -c 'import sys; print(sys.executable)')" >> $GITHUB_ENV
+        python -c "import sys; print(sys.version)"
+        which python
+
+    # ------------------------------------------------------------
+    # Clone Norma.jl (sparse checkout)
+    # ------------------------------------------------------------
+    - name: Clone Norma.jl
+      run: |
+        git clone --depth=1 https://github.com/sandialabs/Norma.jl.git
         cd Norma.jl
-        git sparse-checkout set --no-cone /src /Project.toml
-        git checkout
+        git sparse-checkout init --cone
+        git sparse-checkout set src Project.toml
 
-
+    # ------------------------------------------------------------
+    # Julia
+    # ------------------------------------------------------------
     - name: Set up Julia
-      uses: julia-actions/setup-julia@v2 
+      uses: julia-actions/setup-julia@v2
       with:
-        version: '1.11'  # Specify the Julia version
+        version: '1.11'
 
     - name: Cache Julia artifacts
       uses: julia-actions/cache@v2
 
-    - name: Setup Norma 
+    # ------------------------------------------------------------
+    # Julia + PyCall (BOUND TO PYTHON)
+    # ------------------------------------------------------------
+    - name: Setup Norma.jl and PyCall
       env:
-        PYTHON: python 
+        PYTHON: ${{ env.PYTHON_PATH }}
       run: |
-        which python
-        which python3
-        cd Norma.jl 
-        julia -e 'import Pkg; ENV["PYTHON"] = "/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/python"; Pkg.add("PyCall"); Pkg.build("PyCall")'
+        cd Norma.jl
+        julia --project=. -e '
+          import Pkg
+          ENV["PYTHON"] = ENV["PYTHON"]
+          @info "Using PYTHON" ENV["PYTHON"]
 
-    - name: Install dependencies
-      env:
-        PYTHON: ${{ github.python }} 
+          Pkg.instantiate()
+          Pkg.add("PyCall")
+          Pkg.build("PyCall")
+
+          using PyCall
+          @info "PyCall bound python" PyCall.python
+          @info "PyCall libpython" PyCall.libpython
+
+          pyimport("sys")
+          pyimport("platform")
+        '
+
+    # ------------------------------------------------------------
+    # Python package install
+    # ------------------------------------------------------------
+    - name: Install Python dependencies
       run: |
         pip install --upgrade pip
-        pip install . 
+        pip install .
 
+    # ------------------------------------------------------------
+    # Tests
+    # ------------------------------------------------------------
     - name: Run tests
-      env:
-        PYTHON: python 
       run: |
         pytest --norma="julia --project=$GITHUB_WORKSPACE/Norma.jl $GITHUB_WORKSPACE/Norma.jl/src/Norma.jl"
+
