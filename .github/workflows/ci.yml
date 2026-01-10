@@ -38,10 +38,10 @@ jobs:
     # ------------------------------------------------------------
     - name: Clone Norma.jl
       run: |
-        git clone --depth=1 https://github.com/sandialabs/Norma.jl.git
+        git clone -n --depth=1 --filter=tree:0 https://github.com/sandialabs/Norma.jl.git
         cd Norma.jl
-        git sparse-checkout init --cone
-        git sparse-checkout set src Project.toml
+        git sparse-checkout set --no-cone /src /Project.toml
+        git checkout
 
     # ------------------------------------------------------------
     # Julia
