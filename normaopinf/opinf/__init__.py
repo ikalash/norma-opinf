@@ -1,20 +1,21 @@
-import numpy as np
-import opinf
 import sys
 import os
-from matplotlib import pyplot as plt
-import normaopinf
-import normaopinf.readers
-import normaopinf.calculus
-import normaopinf.parser
+from copy import deepcopy
+
+import numpy as np
+import opinf
 import romtools
-import scipy.optimize
-import argparse
-import normaopinf.opinf.models as opinf_models
 import nnopinf
 import nnopinf.operators
 import nnopinf.models
 import nnopinf.training
+
+import normaopinf
+import normaopinf.readers
+import normaopinf.calculus
+import normaopinf.parser
+import normaopinf.opinf.models as opinf_models
+
 
 # ANSI escape codes for bold and blue text
 BOLD_BLUE ='\033[0;34m'  # Bold blue
@@ -376,116 +377,93 @@ def get_processed_snapshots(opinf_settings):
   base_name = opinf_settings['fom-yaml-file'].split('/')[-1].split('.')[0]
 
   # Load in snapshots
+  displacement_snapshots = None
+  velocity_snapshots = None
+  acceleration_snapshots = None
+  times = None
   for i in range(n_training_cases):
     cur_dir = opinf_settings['training-data-directories'][i]
 
+    displacement_snapshots_in, times_in = normaopinf.readers.load_displacement_csv_files(
+      solution_directory=cur_dir,
+      base_name=base_name,
+      skip_files=opinf_settings['training-skip-steps'],
+    )
+    velocity_snapshots_in, _ = normaopinf.readers.load_velocity_csv_files(
+      solution_directory=cur_dir,
+      base_name=base_name,
+      skip_files=opinf_settings['training-skip-steps'],
+    )
+    acceleration_snapshots_in,_ = normaopinf.readers.load_acceleration_csv_files(
+      solution_directory=cur_dir,
+      base_name=base_name,
+      skip_files=opinf_settings['training-skip-steps'],
+    )
+
+    # Identify which DOFs are free
+    free_dofs = normaopinf.readers.get_free_dofs(solution_directory=cur_dir, base_name=base_name)
     if i == 0:
-      displacement_snapshots, times = normaopinf.readers.load_displacement_csv_files(
-        solution_directory=cur_dir,
-        base_name=base_name,
-        skip_files=opinf_settings['training-skip-steps'],
-      )
-      velocity_snapshots, _ = normaopinf.readers.load_velocity_csv_files(
-        solution_directory=cur_dir,
-        base_name=base_name,
-        skip_files=opinf_settings['training-skip-steps'],
-      )
-      acceleration_snapshots,_ = normaopinf.readers.load_acceleration_csv_files(
-        solution_directory=cur_dir,
-        base_name=base_name,
-        skip_files=opinf_settings['training-skip-steps'],
-      )
-
-      # Identify which DOFs are free
-      free_dofs = normaopinf.readers.get_free_dofs(solution_directory=cur_dir, base_name=base_name)
-      if opinf_settings['stop-training-time'] != 'end':
-        stop_index = np.argmin(np.abs(times - float(opinf_settings['stop-training-time']) ) )
-        print('Only training on the first ' + str(stop_index) + ' snapshots')
-        displacement_snapshots = displacement_snapshots[...,0:stop_index]
-        velocity_snapshots = velocity_snapshots[...,0:stop_index]
-        acceleration_snapshots = acceleration_snapshots[...,0:stop_index]
-        times = times[0:stop_index]
-
-      # Add extra axis to handle case where we have multiple training directories
-      displacement_snapshots = displacement_snapshots[:,:,None,:]
-      velocity_snapshots = velocity_snapshots[:,:,None,:]
-      acceleration_snapshots = acceleration_snapshots[:,:,None,:]
-      times = times[...,None]
-
+      free_dofs_check = free_dofs.copy()
     else:
-      displacement_snapshots_tmp, times_tmp = normaopinf.readers.load_displacement_csv_files(
-        solution_directory=cur_dir,
-        base_name=base_name,
-        skip_files=opinf_settings['training-skip-steps'],
-      )
-      velocity_snapshots_tmp, _ = normaopinf.readers.load_velocity_csv_files(
-        solution_directory=cur_dir,
-        base_name=base_name,
-        skip_files=opinf_settings['training-skip-steps'],
-      )
-      acceleration_snapshots_tmp, _ = normaopinf.readers.load_acceleration_csv_files(
-        solution_directory=cur_dir,
-        base_name=base_name,
-        skip_files=opinf_settings['training-skip-steps'],
-      )
+      assert np.allclose(free_dofs, free_dofs_check), \
+        "Error, different solution directories have different free DOFs"
 
-      if opinf_settings['stop-training-time'] != 'end':
-        displacement_snapshots_tmp = displacement_snapshots_tmp[...,0:stop_index]
-        velocity_snapshots_tmp = velocity_snapshots_tmp[...,0:stop_index]
-        acceleration_snapshots_tmp = acceleration_snapshots_tmp[...,0:stop_index]
-        times_tmp = times_tmp[0:stop_index]
+    # Truncate data to training size
+    if opinf_settings['stop-training-time'] != 'end':
+      stop_index = np.argmin(np.abs(times_in - float(opinf_settings['stop-training-time'])))
+      print('Only training on the first ' + str(stop_index) + ' snapshots')
 
-      # Add extra axis to handle case where we have multiple training directories
-      displacement_snapshots_tmp = displacement_snapshots_tmp[:,:,None,:]
-      velocity_snapshots_tmp = velocity_snapshots_tmp[:,:,None,:]
-      acceleration_snapshots_tmp = acceleration_snapshots_tmp[:,:,None,:]
-      times_tmp = times_tmp[...,None]
+      displacement_snapshots_in = displacement_snapshots_in[...,0:stop_index]
+      velocity_snapshots_in = velocity_snapshots_in[...,0:stop_index]
+      acceleration_snapshots_in = acceleration_snapshots_in[...,0:stop_index]
+      times_in = times_in[0:stop_index]
 
-      displacement_snapshots = np.append(displacement_snapshots, displacement_snapshots_tmp, axis=2)
-      velocity_snapshots = np.append(velocity_snapshots, velocity_snapshots_tmp, axis=2)
-      acceleration_snapshots = np.append(acceleration_snapshots, acceleration_snapshots_tmp, axis=2)
-      times = np.append(times, times_tmp, axis=1)
+    # Add extra axis to handle case where we have multiple training directories
+    displacement_snapshots_in = displacement_snapshots_in[:,:,None,:]
+    velocity_snapshots_in = velocity_snapshots_in[:,:,None,:]
+    acceleration_snapshots_in = acceleration_snapshots_in[:,:,None,:]
+    times_in = times_in[...,None]
 
-      _ = normaopinf.readers.get_free_dofs(solution_directory=cur_dir, base_name=base_name)
-      assert np.allclose(free_dofs,_), "Error, different solution directories have different free DOFs"
+    if i == 0:
+      displacement_snapshots = displacement_snapshots_in.copy()
+      velocity_snapshots = velocity_snapshots_in.copy()
+      acceleration_snapshots = acceleration_snapshots_in.copy()
+      times = times_in.copy()
+    else:
+      displacement_snapshots = np.append(displacement_snapshots, displacement_snapshots_in, axis=2)
+      velocity_snapshots = np.append(velocity_snapshots, velocity_snapshots_in, axis=2)
+      acceleration_snapshots = np.append(acceleration_snapshots, acceleration_snapshots_in, axis=2)
+      times = np.append(times, times_in, axis=1)
 
   # Get sideset snapshots
   sidesets = get_bc_sidesets(input_yaml)
   if len(sidesets) > 0:
+
+    sideset_snapshots = None
     for i in range(n_training_cases):
       cur_dir = opinf_settings['training-data-directories'][i]
+
+      sideset_snapshots_in = normaopinf.readers.load_sideset_displacement_csv_files(
+        solution_directory=cur_dir,
+        sidesets=sidesets,
+        base_name=base_name,
+        skip_files=opinf_settings['training-skip-steps'],
+      )
+      if opinf_settings['stop-training-time'] != 'end':
+        for sideset in sidesets:
+          sideset_snapshots_in[sideset] = sideset_snapshots_in[sideset][...,0:stop_index]
+
+      # Add extra axis to handle case where we have multiple training directories
+      for sideset in sidesets:
+        sideset_snapshots_in[sideset] = sideset_snapshots_in[sideset][:,:,None,:]
+
+      # Collect
       if i == 0:
-        sideset_snapshots = normaopinf.readers.load_sideset_displacement_csv_files(
-          solution_directory=cur_dir,
-          sidesets=sidesets,
-          base_name=base_name,
-          skip_files=opinf_settings['training-skip-steps'],
-        )
-        if opinf_settings['stop-training-time'] != 'end':
-          for sideset in sidesets:
-            sideset_snapshots[sideset] = sideset_snapshots[sideset][...,0:stop_index]
-
-        # Add extra axis to handle case where we have multiple training directories
-        for sideset in sidesets:
-          sideset_snapshots[sideset] = sideset_snapshots[sideset][:,:,None,:]
+        sideset_snapshots = deepcopy(sideset_snapshots_in)
       else:
-        sideset_snapshots_tmp = normaopinf.readers.load_sideset_displacement_csv_files(
-          solution_directory=cur_dir,
-          sidesets=sidesets,
-          base_name=base_name,
-          skip_files=opinf_settings['training-skip-steps'],
-        )
-        if opinf_settings['stop-training-time'] != 'end':
-          for sideset in sidesets:
-            sideset_snapshots_tmp[sideset] = sideset_snapshots_tmp[sideset][...,0:stop_index]
-
-        # Add extra axis to handle case where we have multiple training directories
         for sideset in sidesets:
-          sideset_snapshots_tmp[sideset] = sideset_snapshots_tmp[sideset][:,:,None,:]
+          sideset_snapshots[sideset] = np.append(sideset_snapshots[sideset], sideset_snapshots_in[sideset], axis=2)
 
-        # Append
-        for sideset in sidesets:
-          sideset_snapshots[sideset] = np.append(sideset_snapshots[sideset], sideset_snapshots_tmp[sideset], axis=2)
   else:
       sideset_snapshots = {}
 
