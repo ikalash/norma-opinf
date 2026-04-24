@@ -106,6 +106,10 @@ def get_acceptable_opinf_settings():
 
   # How we compute the acceleration (either from snapshots or finite difference of displacement)
   acceptable_settings['acceleration-computation-type'] = ['acceleration-snapshots','finite-difference']
+  # Whether to save sideset bases in the output npz
+  acceptable_settings['save-sideset-bases'] = [True, False]
+  # How we scale boundary input snapshots (sideset displacement/force)
+  acceptable_settings['input-scale'] = ['none','rms']
   return acceptable_settings
 
 
@@ -125,10 +129,18 @@ def check_valid_settings_for_getting_snapshots(opinf_settings):
   assert (isinstance(opinf_settings['stop-training-time'],float) or opinf_settings['stop-training-time'] == 'end'), "stop-training-time must be a float or 'end'"
 
 
-
 def check_valid_settings(opinf_settings):
-  required_keys = ['fom-yaml-file','training-data-directories','training-skip-steps','model-type','forcing','truncation-type','truncation-value','boundary-truncation-type',
-                   'boundary-truncation-value','regularization-parameter','model-name','trial-space-splitting-type','acceleration-computation-type']
+  if 'input-scale' not in opinf_settings:
+      opinf_settings['input-scale'] = 'none'
+  if 'save-sideset-bases' not in opinf_settings:
+      opinf_settings['save-sideset-bases'] = False
+  required_keys = [
+     'fom-yaml-file','training-data-directories','training-skip-steps',
+     'model-type','forcing','truncation-type','truncation-value',
+     'boundary-truncation-type','boundary-truncation-value',
+     'regularization-parameter','model-name','trial-space-splitting-type',
+     'acceleration-computation-type'
+  ]
 
   opinf_keys = list(opinf_settings.keys())
   for key in required_keys:
@@ -138,9 +150,6 @@ def check_valid_settings(opinf_settings):
 
   for key in list(acceptable_settings.keys()):
       assert opinf_settings[key] in acceptable_settings[key], formatRed("Error processing OpInf settings: key " + str(opinf_settings[key]) + " is not valid \n" +  "Acceptable options are: " + str(acceptable_settings[key]))
-
-
-
 
 
 def get_example_opinf_settings():
@@ -155,6 +164,8 @@ def get_example_opinf_settings():
 
   # Type of ROM to create
   settings['model-type'] = 'linear'
+  # How to scale sideset displacement/force inputs
+  settings['input-scale'] = 'none'
 
   # If ROM has forcing
   settings['forcing'] =  False
@@ -343,11 +354,11 @@ def create_linear_opinf_rom(states,acceleration,times,velocity=None,bcs=None):
     return opinf_model
 
 
-def get_bc_sidesets(input_yaml):
-  sidesets = []
+def get_bc_sidesets_by_type(input_yaml):
+  disp_sidesets = []
+  force_sidesets = []
   if 'boundary conditions' in input_yaml:
     bc_block = input_yaml['boundary conditions']
-    acceptable_bc_types = ['Schwarz overlap','Dirichlet']
     for bc in bc_block:
       if 'Dirichlet' in bc:
         n_bcs = len(bc_block['Dirichlet'])
@@ -355,14 +366,35 @@ def get_bc_sidesets(input_yaml):
           nodeset = bc_block['Dirichlet'][i]['node set']
           component = bc_block['Dirichlet'][i]['component']
           name = nodeset + '-' + component
-          sidesets.append(name)
+          disp_sidesets.append(name)
 
       if 'Schwarz overlap' in bc:
         n_bcs = len(bc_block['Schwarz overlap'])
         for i in range(0,n_bcs):
           name = bc_block['Schwarz overlap'][i]['side set']
-          sidesets.append(name)
-    print('Found sidesets: ' + str(sidesets))
+          disp_sidesets.append(name)
+
+      if 'Schwarz nonoverlap' in bc:
+        n_bcs = len(bc_block['Schwarz nonoverlap'])
+        for i in range(0,n_bcs):
+          bc_entry = bc_block['Schwarz nonoverlap'][i]
+          name = bc_entry['side set']
+          if 'default BC type' not in bc_entry:
+            raise ValueError('Schwarz nonoverlap boundary condition for side set ' + name +
+                             ' must specify "default BC type" (Dirichlet or Neumann).')
+          default_bc_type = bc_entry['default BC type']
+          if default_bc_type == 'Neumann':
+            force_sidesets.append(name)
+          else:
+            disp_sidesets.append(name)
+    print('Found displacement sidesets: ' + str(disp_sidesets))
+    print('Found force sidesets: ' + str(force_sidesets))
+  return disp_sidesets, force_sidesets
+
+
+def get_bc_sidesets(input_yaml):
+  disp_sidesets, force_sidesets = get_bc_sidesets_by_type(input_yaml)
+  sidesets = disp_sidesets + force_sidesets
   return sidesets
 
 
@@ -436,8 +468,8 @@ def get_processed_snapshots(opinf_settings):
       times = np.append(times, times_in, axis=1)
 
   # Get sideset snapshots
-  sidesets = get_bc_sidesets(input_yaml)
-  if len(sidesets) > 0:
+  disp_sidesets, force_sidesets = get_bc_sidesets_by_type(input_yaml)
+  if len(disp_sidesets) > 0:
 
     sideset_snapshots = None
     for i in range(n_training_cases):
@@ -445,27 +477,61 @@ def get_processed_snapshots(opinf_settings):
 
       sideset_snapshots_in = normaopinf.readers.load_sideset_displacement_csv_files(
         solution_directory=cur_dir,
-        sidesets=sidesets,
+        sidesets=disp_sidesets,
         base_name=base_name,
         skip_files=opinf_settings['training-skip-steps'],
       )
       if opinf_settings['stop-training-time'] != 'end':
-        for sideset in sidesets:
+        for sideset in disp_sidesets:
           sideset_snapshots_in[sideset] = sideset_snapshots_in[sideset][...,0:stop_index]
 
       # Add extra axis to handle case where we have multiple training directories
-      for sideset in sidesets:
+      for sideset in disp_sidesets:
         sideset_snapshots_in[sideset] = sideset_snapshots_in[sideset][:,:,None,:]
 
       # Collect
       if i == 0:
         sideset_snapshots = deepcopy(sideset_snapshots_in)
       else:
-        for sideset in sidesets:
+        for sideset in disp_sidesets:
           sideset_snapshots[sideset] = np.append(sideset_snapshots[sideset], sideset_snapshots_in[sideset], axis=2)
 
   else:
       sideset_snapshots = {}
+
+  # Get sideset force snapshots (required for non-overlapping Schwarz)
+  sideset_force_snapshots = {}
+  if len(force_sidesets) > 0:
+    for i in range(n_training_cases):
+      cur_dir = opinf_settings['training-data-directories'][i]
+
+      # look for force snapshots
+      sideset_force_in = normaopinf.readers.load_sideset_force_csv_files(
+        solution_directory=cur_dir,
+        sidesets=force_sidesets,
+        base_name=base_name,
+        skip_files=opinf_settings['training-skip-steps'],
+      )
+      if len(sideset_force_in) == 0:
+        continue
+      if opinf_settings['stop-training-time'] != 'end':
+        for sideset in sideset_force_in.keys():
+          sideset_force_in[sideset] = sideset_force_in[sideset][...,0:stop_index]
+
+      # Add extra axis to handle case where we have multiple training directories
+      for sideset in sideset_force_in.keys():
+        sideset_force_in[sideset] = sideset_force_in[sideset][:,:,None,:]
+
+      # concatenate force snapshots
+      if len(sideset_force_snapshots) == 0:
+        sideset_force_snapshots = deepcopy(sideset_force_in)
+      else:
+        for sideset in sideset_force_snapshots.keys():
+          if sideset not in sideset_force_in:
+            raise ValueError('Missing force snapshots for sideset ' + sideset)
+          sideset_force_snapshots[sideset] = np.append(
+            sideset_force_snapshots[sideset], sideset_force_in[sideset], axis=2
+          )
 
   # Set values = 0 if DOFs are fixed
   displacement_snapshots[free_dofs[:,:]==False] = 0.
@@ -477,6 +543,7 @@ def get_processed_snapshots(opinf_settings):
   snapshots_dict['velocity'] = velocity_snapshots
   snapshots_dict['acceleration'] = acceleration_snapshots
   snapshots_dict['sidesets'] = sideset_snapshots
+  snapshots_dict['sideset_forces'] = sideset_force_snapshots
   snapshots_dict['free_dofs'] = free_dofs
   snapshots_dict['times'] = times
 
@@ -497,6 +564,91 @@ def convert_nodesets_to_sidesets(snapshots_dict,nodesets,sidesets):
 
   return snapshots_dict
 
+
+def build_sideset_reduced_snapshots(sideset_snapshots, opinf_settings):
+    sidesets = list(sideset_snapshots.keys())
+    reduced_sideset_snapshots = {}
+    ss_tspace = {}
+    ss_tspace_energy = {}
+    reduced_stacked_sideset_snapshots = None
+
+    if len(sidesets) == 0:
+        return reduced_sideset_snapshots, ss_tspace, ss_tspace_energy, reduced_stacked_sideset_snapshots
+
+    if opinf_settings['boundary-truncation-type'] == "energy":
+        my_boundary_truncater = romtools.vector_space.utils.EnergyBasedTruncater(opinf_settings['boundary-truncation-value'])
+    elif opinf_settings['boundary-truncation-type'] == "size":
+        my_boundary_truncater = romtools.vector_space.utils.BasisSizeTruncater(opinf_settings['boundary-truncation-value'])
+    else:
+        print("Truncater " + opinf_settings['boundary-truncation-type'] + " not supported")
+
+    for sideset in sidesets:
+        snapshot_shape = np.shape(sideset_snapshots[sideset])
+        reshaped_snapshots = np.reshape(
+            sideset_snapshots[sideset], (snapshot_shape[0], snapshot_shape[1], snapshot_shape[2] * snapshot_shape[3])
+        )
+        ss_tspace_energy[sideset] = np.zeros(0)
+
+        if sideset_snapshots[sideset].shape[0] == 1 or opinf_settings['trial-space-splitting-type'] == 'combined':
+            ss_tspace[sideset] = romtools.VectorSpaceFromPOD(
+                snapshots=reshaped_snapshots,
+                truncater=my_boundary_truncater,
+                shifter=None,
+                orthogonalizer=romtools.vector_space.utils.EuclideanL2Orthogonalizer(),
+                scaler=romtools.vector_space.utils.NoOpScaler()
+            )
+            ss_tspace_energy[sideset] = np.append(ss_tspace_energy[sideset], my_boundary_truncater.get_energy())
+        else:
+            comp_trial_space = []
+            for i in range(0, 3):
+                tspace = romtools.VectorSpaceFromPOD(
+                    snapshots=reshaped_snapshots[i:i+1],
+                    truncater=my_boundary_truncater,
+                    shifter=None,
+                    orthogonalizer=romtools.vector_space.utils.EuclideanL2Orthogonalizer(),
+                    scaler=romtools.vector_space.utils.NoOpScaler()
+                )
+                comp_trial_space.append(tspace)
+                ss_tspace_energy[sideset] = np.append(ss_tspace_energy[sideset], my_boundary_truncater.get_energy())
+            ss_tspace[sideset] = romtools.CompositeVectorSpace(comp_trial_space)
+
+        reduced_sideset_snapshots[sideset] = romtools.rom.optimal_l2_projection(reshaped_snapshots, ss_tspace[sideset])
+        reduced_sideset_snapshots[sideset] = np.reshape(
+            reduced_sideset_snapshots[sideset],
+            (reduced_sideset_snapshots[sideset].shape[0], snapshot_shape[2], snapshot_shape[3])
+        )
+
+    for sideset in sidesets:
+        if reduced_stacked_sideset_snapshots is None:
+            reduced_stacked_sideset_snapshots = reduced_sideset_snapshots[sideset] * 1.
+        else:
+            reduced_stacked_sideset_snapshots = np.append(
+                reduced_stacked_sideset_snapshots, reduced_sideset_snapshots[sideset], axis=0
+            )
+
+    return reduced_sideset_snapshots, ss_tspace, ss_tspace_energy, reduced_stacked_sideset_snapshots
+
+
+def compute_sideset_rms_scales(sideset_snapshots):
+    scales = {}
+    for sideset, snaps in sideset_snapshots.items():
+        rms = np.sqrt(np.mean(np.square(snaps)))
+        max_abs = np.max(np.abs(snaps)) if snaps.size > 0 else 0.0
+        floor = 1.0e-12 * max(1.0, max_abs)
+        if rms <= floor:
+            scales[sideset] = 1.0
+        else:
+            scales[sideset] = 1.0 / rms
+    return scales
+
+
+def apply_sideset_scales(sideset_snapshots, scales):
+    scaled = {}
+    for sideset, snaps in sideset_snapshots.items():
+        scale = scales.get(sideset, 1.0)
+        scaled[sideset] = scale * snaps
+    return scaled
+
 def make_opinf_model(opinf_settings):
 
   # Check that settings are valid
@@ -507,7 +659,7 @@ def make_opinf_model(opinf_settings):
   make_opinf_model_from_snapshots_dict(snapshots_dict, opinf_settings)
 
 
-def make_opinf_model_from_snapshots_dict(snapshots_dict,opinf_settings):
+def make_opinf_model_from_snapshots_dict(snapshots_dict, opinf_settings):
     print(BOLD_BLUE + '===== OpInf configuration ===')
     for key in list(opinf_settings.keys()):
       print(key + ':',opinf_settings[key])
@@ -528,59 +680,41 @@ def make_opinf_model_from_snapshots_dict(snapshots_dict,opinf_settings):
     input_yaml = normaopinf.parser.open_yaml(opinf_settings['fom-yaml-file'])
     sideset_snapshots = snapshots_dict['sidesets']
     sidesets = list(sideset_snapshots.keys())#get_bc_sidesets(input_yaml)
+    sideset_force_snapshots = snapshots_dict.get('sideset_forces', {})
+    force_sidesets = list(sideset_force_snapshots.keys())
 
-    reduced_sideset_snapshots = {}
-    if len(sidesets) > 0:
-        # Create bases for sidesets
-        if opinf_settings['boundary-truncation-type'] == "energy":
-            my_boundary_truncater = romtools.vector_space.utils.EnergyBasedTruncater(opinf_settings['boundary-truncation-value'])
-        elif opinf_settings['boundary-truncation-type'] == "size":
-            my_boundary_truncater = romtools.vector_space.utils.BasisSizeTruncater(opinf_settings['boundary-truncation-value'])
-        else:
-            print("Truncater " + opinf_settings['boundary-truncation-type'] + " not supported")
-
-        ss_tspace = {}
-        ss_tspace_energy = {}
+    input_scale_type = opinf_settings.get('input-scale', 'none')
+    disp_input_scales = {}
+    force_input_scales = {}
+    if input_scale_type == 'rms':
+        disp_input_scales = compute_sideset_rms_scales(sideset_snapshots)
+        force_input_scales = compute_sideset_rms_scales(sideset_force_snapshots)
+        sideset_snapshots = apply_sideset_scales(sideset_snapshots, disp_input_scales)
+        sideset_force_snapshots = apply_sideset_scales(sideset_force_snapshots, force_input_scales)
+        print(BOLD_BLUE + '===== Input scaling (RMS) ===')
         for sideset in sidesets:
-            ## Flatten last axis
-            snapshot_shape = np.shape(sideset_snapshots[sideset])
-            reshaped_snapshots = np.reshape(sideset_snapshots[sideset],(snapshot_shape[0],snapshot_shape[1],snapshot_shape[2]*snapshot_shape[3]) )
-            ss_tspace_energy[sideset] = np.zeros(0)
+            scale = disp_input_scales.get(sideset, 1.0)
+            print(f'  displacement sideset {sideset}: scale = {scale:.6e}')
+        for sideset in force_sidesets:
+            scale = force_input_scales.get(sideset, 1.0)
+            print(f'  force sideset {sideset}: scale = {scale:.6e}')
+        print('=============================' + RESET)
 
-            if sideset_snapshots[sideset].shape[0] ==  1 or opinf_settings['trial-space-splitting-type'] == 'combined':
-                ss_tspace[sideset] = romtools.VectorSpaceFromPOD(snapshots=reshaped_snapshots,
-                                                  truncater=my_boundary_truncater,
-                                                  shifter = None,
-                                                  orthogonalizer=romtools.vector_space.utils.EuclideanL2Orthogonalizer(),
-                                                  scaler = romtools.vector_space.utils.NoOpScaler())
-                ss_tspace_energy[sideset] = np.append( ss_tspace_energy[sideset] , my_boundary_truncater.get_energy())
+    # Compute sideset trial spaces
+    reduced_sideset_snapshots, ss_tspace, ss_tspace_energy, reduced_stacked_sideset_snapshots = \
+        build_sideset_reduced_snapshots(sideset_snapshots, opinf_settings)
 
-            else:
-                comp_trial_space = []
-                for i in range(0,3):
-                    tspace = romtools.VectorSpaceFromPOD(snapshots=reshaped_snapshots[i:i+1],
-                                              truncater=my_boundary_truncater,
-                                              shifter = None,
-                                              orthogonalizer=romtools.vector_space.utils.EuclideanL2Orthogonalizer(),
-                                              scaler = romtools.vector_space.utils.NoOpScaler())
+    reduced_sideset_force_snapshots, ss_force_tspace, ss_force_tspace_energy, reduced_stacked_force_snapshots = \
+        build_sideset_reduced_snapshots(sideset_force_snapshots, opinf_settings)
 
-                    comp_trial_space.append(tspace)
-                    ss_tspace_energy[sideset] = np.append( ss_tspace_energy[sideset] , my_boundary_truncater.get_energy())
+    if reduced_stacked_sideset_snapshots is None:
+        reduced_stacked_sideset_snapshots = reduced_stacked_force_snapshots
+    elif reduced_stacked_force_snapshots is not None:
+        reduced_stacked_sideset_snapshots = np.append(
+            reduced_stacked_sideset_snapshots, reduced_stacked_force_snapshots, axis=0
+        )
 
-                ss_tspace[sideset] = romtools.CompositeVectorSpace(comp_trial_space)
-
-
-            reduced_sideset_snapshots[sideset] = romtools.rom.optimal_l2_projection(reshaped_snapshots,ss_tspace[sideset])
-            reduced_sideset_snapshots[sideset] = np.reshape( reduced_sideset_snapshots[sideset], (reduced_sideset_snapshots[sideset].shape[0],snapshot_shape[2],snapshot_shape[3]) )
-
-        reduced_stacked_sideset_snapshots = None
-        for sideset in sidesets:
-            if reduced_stacked_sideset_snapshots is None:
-                reduced_stacked_sideset_snapshots = reduced_sideset_snapshots[sideset]*1.
-            else:
-                reduced_stacked_sideset_snapshots = np.append(reduced_stacked_sideset_snapshots,reduced_sideset_snapshots[sideset],axis=0)
-
-    else:
+    if reduced_stacked_sideset_snapshots is None:
         reduced_stacked_sideset_snapshots = np.zeros((1,displacement_snapshots.shape[-2],displacement_snapshots.shape[-1]))
 
     # Create trial space for main DOFs
@@ -625,8 +759,6 @@ def make_opinf_model_from_snapshots_dict(snapshots_dict,opinf_settings):
         trial_space = romtools.CompositeVectorSpace(trial_spaces)
     else:
         print('trial-space-splitting-type not found')
-
-
 
     # Project snapshots to ROM space
     snapshot_shape = np.shape(displacement_snapshots)
@@ -707,7 +839,9 @@ def make_opinf_model_from_snapshots_dict(snapshots_dict,opinf_settings):
         print(f'ROM basis size: {k}')
         print(f'Sideset info:')
         for sideset in sidesets:
-          print(f'    Sideset {sideset} basis size: {np.shape( ss_tspace[sideset].get_basis() )[-1]}')
+          print(f'    Displacement sideset {sideset} basis size: {np.shape( ss_tspace[sideset].get_basis() )[-1]}')
+        for sideset in force_sidesets:
+          print(f'    Force sideset {sideset} basis size: {np.shape( ss_force_tspace[sideset].get_basis() )[-1]}')
         print('=========================' + RESET)
         K = opinf_model.get_stiffness_matrix()
         B = opinf_model.get_exogenous_input_matrix()
@@ -720,15 +854,32 @@ def make_opinf_model_from_snapshots_dict(snapshots_dict,opinf_settings):
           shape2 = B[:,col_start:col_start + num_dofs] @ ss_tspace[sideset].get_basis()[0].transpose()
           sideset_operators["B_" + sideset] = val#
           col_start += num_dofs
+        for sideset in force_sidesets:
+          num_dofs = reduced_sideset_force_snapshots[sideset].shape[0]
+          val = np.einsum('kr,vnr->vkn',B[:,col_start:col_start + num_dofs] , ss_force_tspace[sideset].get_basis() )
+          shape2 = B[:,col_start:col_start + num_dofs] @ ss_force_tspace[sideset].get_basis()[0].transpose()
+          sideset_operators["B_N_" + sideset] = val#
+          col_start += num_dofs
 
         vals_to_save = sideset_operators
         for sideset in sidesets:
           vals_to_save[sideset + '-energy-cutoff'] = ss_tspace_energy[sideset]
+          if input_scale_type == 'rms':
+            vals_to_save["input-scale-B_" + sideset] = disp_input_scales.get(sideset, 1.0)
+          if opinf_settings.get('save-sideset-bases', False):
+            vals_to_save["basis-B_" + sideset] = ss_tspace[sideset].get_basis()
+        for sideset in force_sidesets:
+          vals_to_save[sideset + '-force-energy-cutoff'] = ss_force_tspace_energy[sideset]
+          if input_scale_type == 'rms':
+            vals_to_save["input-scale-B_N_" + sideset] = force_input_scales.get(sideset, 1.0)
+          if opinf_settings.get('save-sideset-bases', False):
+            vals_to_save["basis-B_N_" + sideset] = ss_force_tspace[sideset].get_basis()
 
         vals_to_save["regularization-parameter"] = regularization_parameter
         vals_to_save["basis"] = trial_space.get_basis()
         vals_to_save["K"] = K
         vals_to_save["energy-cutoff"] = tspace_energy
+        # Do not save string types in npz (NPZ.jl cannot parse them)
 
         if isinstance(opinf_model,normaopinf.opinf.models.ShaneNonParametricQuadraticOpInfModel):
           H = opinf_model.get_quadratic_stiffness_matrix()
@@ -770,4 +921,3 @@ def make_opinf_model_from_snapshots_dict(snapshots_dict,opinf_settings):
 
         for ensemble_id in range(opinf_settings['ensemble-size']):
             train_model(opinf_settings,output_dir,ensemble_id,uhat,uhat_ddots,reduced_sideset_snapshots,initialization_model=None)
-
