@@ -7,7 +7,7 @@ Repository of python code for performing operator inference in Norma
 Clone this repo
 
 ```bash
-git clone git@gitlab-ex.sandia.gov:ejparis/norma-opinf.git
+git clone https://github.com/sandialabs/norma-opinf.git
 ```
 
 
